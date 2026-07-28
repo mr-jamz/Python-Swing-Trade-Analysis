@@ -30,6 +30,17 @@ class Result:
     relative_volume: float
     average_dollar_volume: float
     setup: str
+    signal: str
+    buy_votes: int
+    sell_votes: int
+    neutral_votes: int
+    model_votes: dict[str, str]
+    limit_entry: float
+    stop_price: float
+    target_price: float
+    risk_per_share: float
+    order_action: str
+    order_note: str
     reasons: list[str]
     warnings: list[str]
 
@@ -50,6 +61,15 @@ def add_indicators(frame: pd.DataFrame) -> pd.DataFrame:
 
     data["EMA20"] = close.ewm(span=20, adjust=False).mean()
     data["EMA50"] = close.ewm(span=50, adjust=False).mean()
+    data["SMA20"] = close.rolling(20).mean()
+    standard_deviation = close.rolling(20).std()
+    data["BB_UPPER"] = data["SMA20"] + (2 * standard_deviation)
+    data["BB_LOWER"] = data["SMA20"] - (2 * standard_deviation)
+
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    data["MACD"] = ema12 - ema26
+    data["MACD_SIGNAL"] = data["MACD"].ewm(span=9, adjust=False).mean()
 
     delta = close.diff()
     gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
@@ -68,8 +88,90 @@ def add_indicators(frame: pd.DataFrame) -> pd.DataFrame:
     data["ATR14"] = true_range.ewm(alpha=1 / 14, adjust=False).mean()
     data["AVG_VOLUME20"] = data["Volume"].rolling(20).mean()
     data["PRIOR_HIGH20"] = data["High"].shift(1).rolling(20).max()
+    data["PRIOR_LOW20"] = data["Low"].shift(1).rolling(20).min()
     data["HIGH252"] = data["High"].rolling(252, min_periods=100).max()
     return data
+
+
+def model_consensus(row: pd.Series) -> tuple[str, dict[str, str]]:
+    close = float(row["Close"])
+    ema20 = float(row["EMA20"])
+    ema50 = float(row["EMA50"])
+    rsi = float(row["RSI14"])
+    macd = float(row["MACD"])
+    macd_signal = float(row["MACD_SIGNAL"])
+    relative_volume = float(row["Volume"] / row["AVG_VOLUME20"])
+    prior_high = float(row["PRIOR_HIGH20"])
+    prior_low = float(row["PRIOR_LOW20"])
+
+    votes = {
+        "EMA trend": (
+            "Buy"
+            if close > ema20 > ema50
+            else "Sell" if close < ema20 < ema50 else "Neutral"
+        ),
+        "MACD momentum": (
+            "Buy"
+            if macd > macd_signal and macd > 0
+            else "Sell" if macd < macd_signal and macd < 0 else "Neutral"
+        ),
+        "RSI momentum": (
+            "Buy"
+            if 50 <= rsi <= 70
+            else "Sell" if rsi < 40 or rsi > 75 else "Neutral"
+        ),
+        "Breakout + volume": (
+            "Buy"
+            if close > prior_high and relative_volume >= 1.2
+            else (
+                "Sell"
+                if close < prior_low and relative_volume >= 1.2
+                else "Neutral"
+            )
+        ),
+    }
+
+    buy_votes = sum(vote == "Buy" for vote in votes.values())
+    sell_votes = sum(vote == "Sell" for vote in votes.values())
+    if buy_votes >= 3 and sell_votes == 0:
+        signal = "Strong Buy"
+    elif buy_votes >= 2 and buy_votes > sell_votes:
+        signal = "Buy"
+    elif sell_votes >= 3 and buy_votes == 0:
+        signal = "Strong Sell"
+    elif sell_votes >= 2 and sell_votes > buy_votes:
+        signal = "Sell"
+    else:
+        signal = "Neutral"
+    return signal, votes
+
+
+def order_guide(row: pd.Series, signal: str) -> dict[str, float | str]:
+    close = float(row["Close"])
+    ema20 = float(row["EMA20"])
+    atr = float(row["ATR14"])
+
+    # A pullback guide: never above the latest close and never more than 1 ATR below it.
+    limit_entry = max(close - atr, min(close, ema20))
+    risk_per_share = max(atr * 1.5, limit_entry * 0.01)
+    stop_price = max(0.01, limit_entry - risk_per_share)
+    target_price = limit_entry + (2 * risk_per_share)
+    bullish = signal in {"Buy", "Strong Buy"}
+
+    return {
+        "limit_entry": round(limit_entry, 2),
+        "stop_price": round(stop_price, 2),
+        "target_price": round(target_price, 2),
+        "risk_per_share": round(risk_per_share, 2),
+        "order_action": "Research buy limit" if bullish else "No new long setup",
+        "order_note": (
+            "Hypothetical pullback entry. A buy limit may fill at this price or lower, "
+            "but execution is not guaranteed."
+            if bullish
+            else "The model vote does not support a new long entry. Prices are shown "
+            "only as a risk map; wait for a fresh bullish signal."
+        ),
+    }
 
 
 def score_ticker(ticker: str, frame: pd.DataFrame) -> Result | None:
@@ -88,6 +190,8 @@ def score_ticker(ticker: str, frame: pd.DataFrame) -> Result | None:
     average_dollar_volume = float(row["AVG_VOLUME20"] * close)
     day_change_pct = float((close / prior["Close"] - 1) * 100)
     high_252 = float(row["HIGH252"])
+    signal, model_votes = model_consensus(row)
+    guide = order_guide(row, signal)
 
     score = 0
     reasons: list[str] = []
@@ -162,6 +266,17 @@ def score_ticker(ticker: str, frame: pd.DataFrame) -> Result | None:
         relative_volume=round(relative_volume, 2),
         average_dollar_volume=round(average_dollar_volume, 0),
         setup=setup,
+        signal=signal,
+        buy_votes=sum(vote == "Buy" for vote in model_votes.values()),
+        sell_votes=sum(vote == "Sell" for vote in model_votes.values()),
+        neutral_votes=sum(vote == "Neutral" for vote in model_votes.values()),
+        model_votes=model_votes,
+        limit_entry=float(guide["limit_entry"]),
+        stop_price=float(guide["stop_price"]),
+        target_price=float(guide["target_price"]),
+        risk_per_share=float(guide["risk_per_share"]),
+        order_action=str(guide["order_action"]),
+        order_note=str(guide["order_note"]),
         reasons=reasons,
         warnings=warnings,
     )
@@ -224,13 +339,18 @@ def money(value: float) -> str:
 def render_html(results: list[Result], skipped: list[str], output: Path) -> None:
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     rows = []
-    for item in results:
+    for index, item in enumerate(results):
         reason_text = "; ".join(item.reasons) or "No positive rules matched"
         warning_text = "; ".join(item.warnings) or "None"
+        signal_class = item.signal.lower().replace(" ", "-")
         rows.append(
             "<tr>"
-            f"<td class='ticker'>{html.escape(item.ticker)}</td>"
+            f"<td><button class='ticker stock-open' data-index='{index}'>"
+            f"{html.escape(item.ticker)}</button></td>"
             f"<td><span class='score s{min(item.score // 20, 4)}'>{item.score}</span></td>"
+            f"<td><span class='signal {signal_class}'>{html.escape(item.signal)}</span>"
+            f"<small>{item.buy_votes}B / {item.sell_votes}S / "
+            f"{item.neutral_votes}N</small></td>"
             f"<td>{html.escape(item.setup)}</td>"
             f"<td>${item.close:,.2f}</td>"
             f"<td>{item.day_change_pct:+.2f}%</td>"
@@ -238,17 +358,19 @@ def render_html(results: list[Result], skipped: list[str], output: Path) -> None
             f"<td>{item.relative_volume:.2f}×</td>"
             f"<td>{item.atr_pct:.2f}%</td>"
             f"<td>{money(item.average_dollar_volume)}</td>"
-            f"<td><details><summary>Why</summary>{html.escape(reason_text)}"
-            f"<br><strong>Warnings:</strong> {html.escape(warning_text)}</details></td>"
+            f"<td><button class='open-guide stock-open' data-index='{index}'>"
+            f"Open guide</button><span class='sr-only'>{html.escape(reason_text)} "
+            f"Warnings: {html.escape(warning_text)}</span></td>"
             "</tr>"
         )
 
     table_rows = "\n".join(rows) or (
-        "<tr><td colspan='10'>No usable market data was returned. Try again later.</td></tr>"
+        "<tr><td colspan='11'>No usable market data was returned. Try again later.</td></tr>"
     )
     skipped_note = (
         f"<p class='muted'>Skipped: {html.escape(', '.join(skipped))}</p>" if skipped else ""
     )
+    results_json = json.dumps([asdict(item) for item in results]).replace("</", "<\\/")
     document = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -270,11 +392,34 @@ border-radius:12px; }}
 table {{ width:100%; border-collapse:collapse; white-space:nowrap; }}
 th,td {{ padding:12px; border-bottom:1px solid var(--line); text-align:left; }}
 th {{ position:sticky; top:0; background:#182137; color:#b9c4d8; }}
-tr:hover {{ background:#192238; }} .ticker {{ font-weight:750; color:var(--accent); }}
+tr:hover {{ background:#192238; }} .ticker {{ font:inherit; font-weight:750;
+color:var(--accent); background:none; border:0; padding:0; cursor:pointer; }}
 .score {{ display:inline-grid; place-items:center; min-width:38px; padding:4px 7px;
 border-radius:999px; background:#34405b; }} .s3,.s4 {{ background:#135d4b; }}
-.s2 {{ background:#66511b; }} details {{ white-space:normal; min-width:260px; }}
-summary {{ cursor:pointer; color:#93c5fd; }}
+.s2 {{ background:#66511b; }} small {{ display:block; color:var(--muted); }}
+.signal {{ display:inline-block; padding:4px 8px; border-radius:999px;
+font-weight:750; }} .buy,.strong-buy {{ background:#135d4b; color:#b7f7dd; }}
+.sell,.strong-sell {{ background:#742f3b; color:#fecdd3; }}
+.neutral {{ background:#3d465b; color:#d9e1ef; }}
+.open-guide {{ border:1px solid #456086; border-radius:8px; padding:7px 10px;
+background:#1c2a43; color:#bfdbfe; cursor:pointer; }}
+.sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
+dialog {{ width:min(720px,calc(100% - 24px)); max-height:calc(100% - 24px);
+overflow:auto; color:var(--text); background:var(--panel); border:1px solid var(--line);
+border-radius:14px; padding:0; box-shadow:0 24px 80px #000a; }}
+dialog::backdrop {{ background:#030712cc; }}
+.dialog-head {{ display:flex; align-items:center; justify-content:space-between;
+padding:18px 20px; border-bottom:1px solid var(--line); }}
+.dialog-head h2 {{ margin:0; }} .dialog-body {{ padding:20px; }}
+.close {{ background:none; border:0; color:var(--text); font-size:28px;
+cursor:pointer; }} .price-grid {{ display:grid;
+grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; }}
+.card {{ padding:12px; border:1px solid var(--line); border-radius:10px;
+background:#11182a; }} .card b {{ display:block; font-size:18px; }}
+.model-table {{ width:100%; white-space:normal; margin:14px 0; }}
+.model-table td {{ padding:9px 4px; }} .order-note {{ padding:12px;
+border-left:4px solid #60a5fa; background:#15233b; }}
 </style>
 </head>
 <body><main>
@@ -282,7 +427,7 @@ summary {{ cursor:pointer; color:#93c5fd; }}
 <p class="muted">Generated {generated} · Highest rule-match score first</p>
 <div class="notice"><strong>Important:</strong> {html.escape(DISCLAIMER)}</div>
 <div class="table-wrap"><table>
-<thead><tr><th>Ticker</th><th>Score</th><th>Setup</th><th>Close</th>
+<thead><tr><th>Ticker</th><th>Score</th><th>Signal</th><th>Setup</th><th>Close</th>
 <th>Day</th><th>RSI</th><th>Rel. volume</th><th>ATR</th>
 <th>Avg $ volume</th><th>Details</th></tr></thead>
 <tbody>{table_rows}</tbody>
@@ -290,7 +435,83 @@ summary {{ cursor:pointer; color:#93c5fd; }}
 {skipped_note}
 <p class="muted">A score is a transparent checklist total. It is not a prediction.
 Prices may be delayed or incomplete.</p>
-</main></body></html>"""
+</main>
+<dialog id="stock-dialog">
+  <div class="dialog-head">
+    <div><h2 id="dialog-ticker"></h2><span id="dialog-signal" class="signal"></span></div>
+    <button class="close" id="dialog-close" aria-label="Close">&times;</button>
+  </div>
+  <div class="dialog-body">
+    <p id="dialog-votes" class="muted"></p>
+    <h3>Model votes</h3>
+    <table class="model-table"><tbody id="model-votes"></tbody></table>
+    <h3>Hypothetical order guide</h3>
+    <p><strong id="order-action"></strong></p>
+    <div class="price-grid">
+      <div class="card">Buy limit<b id="limit-entry"></b></div>
+      <div class="card">Protective stop guide<b id="stop-price"></b></div>
+      <div class="card">2R target guide<b id="target-price"></b></div>
+      <div class="card">Risk per share<b id="risk-share"></b></div>
+    </div>
+    <p class="order-note" id="order-note"></p>
+    <p class="muted">Share-count formula: your chosen dollar risk ÷ risk per share.
+    A limit order may not execute. A stop order can execute away from its stop price.
+    Confirm prices and order behavior with your broker.</p>
+    <h3>Why it ranked here</h3>
+    <p id="dialog-reasons"></p>
+    <p><strong>Warnings:</strong> <span id="dialog-warnings"></span></p>
+  </div>
+</dialog>
+<script id="results-data" type="application/json">{results_json}</script>
+<script>
+const results = JSON.parse(document.getElementById("results-data").textContent);
+const dialog = document.getElementById("stock-dialog");
+const dollars = value => `$${{Number(value).toFixed(2)}}`;
+
+function openStock(index) {{
+  const item = results[index];
+  document.getElementById("dialog-ticker").textContent =
+    `${{item.ticker}} · $${{item.close.toFixed(2)}}`;
+  const signal = document.getElementById("dialog-signal");
+  signal.textContent = item.signal;
+  signal.className = `signal ${{item.signal.toLowerCase().replaceAll(" ", "-")}}`;
+  document.getElementById("dialog-votes").textContent =
+    `${{item.buy_votes}} Buy · ${{item.sell_votes}} Sell · ` +
+    `${{item.neutral_votes}} Neutral`;
+  document.getElementById("model-votes").replaceChildren(
+    ...Object.entries(item.model_votes).map(([model, vote]) => {{
+      const row = document.createElement("tr");
+      const name = document.createElement("td");
+      const result = document.createElement("td");
+      name.textContent = model;
+      result.textContent = vote;
+      result.className = `signal ${{vote.toLowerCase()}}`;
+      row.append(name, result);
+      return row;
+    }})
+  );
+  document.getElementById("order-action").textContent = item.order_action;
+  document.getElementById("limit-entry").textContent = dollars(item.limit_entry);
+  document.getElementById("stop-price").textContent = dollars(item.stop_price);
+  document.getElementById("target-price").textContent = dollars(item.target_price);
+  document.getElementById("risk-share").textContent = dollars(item.risk_per_share);
+  document.getElementById("order-note").textContent = item.order_note;
+  document.getElementById("dialog-reasons").textContent =
+    item.reasons.join("; ") || "No positive rules matched";
+  document.getElementById("dialog-warnings").textContent =
+    item.warnings.join("; ") || "None";
+  dialog.showModal();
+}}
+
+document.querySelectorAll(".stock-open").forEach(button =>
+  button.addEventListener("click", () => openStock(Number(button.dataset.index)))
+);
+document.getElementById("dialog-close").addEventListener("click", () => dialog.close());
+dialog.addEventListener("click", event => {{
+  if (event.target === dialog) dialog.close();
+}});
+</script>
+</body></html>"""
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(document, encoding="utf-8")
 
