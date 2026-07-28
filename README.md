@@ -18,6 +18,20 @@ private-repository Pages restrictions and does not expose brokerage credentials,
 because this version has none. GitHub's free-plan usage and Pages availability
 are subject to GitHub's current terms.
 
+## Open a stock guide
+
+Click a ticker or **Open guide** in the report. The panel shows:
+
+- A consensus signal from EMA trend, MACD momentum, RSI momentum, and a
+  volume-confirmed 20-day breakout model
+- Each model's individual Buy, Neutral, or Sell vote
+- A hypothetical pullback buy-limit price, ATR-based protective stop guide,
+  2R target guide, and risk per share
+
+The order guide is a price-and-risk calculator, not an order ticket. A buy limit
+can execute only at its limit price or lower and may never fill. Confirm live
+prices and order behavior with your broker.
+
 ## Change the stocks
 
 Edit `config/tickers.txt`. Use one Yahoo Finance ticker symbol per line.
