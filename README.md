@@ -1,8 +1,12 @@
 # US Swing Stock Screener
 
-A free, manual-run research screener for liquid US stocks. It downloads daily
+A free, manual-run research screener for US-listed stocks and ETFs. It downloads daily
 market data, applies transparent technical rules, ranks the watchlist, and
 publishes an HTML report with GitHub Pages.
+
+By default, each run loads the current Nasdaq and other US-exchange symbol
+directories, including stocks and ETFs. Test issues and obvious warrants,
+rights, and units are excluded.
 
 This project does **not** place orders or tell you what to buy. Start with paper
 trading and validate the rules before considering any brokerage integration.
@@ -17,6 +21,10 @@ The completed workflow shows a link to the report. A public repository avoids
 private-repository Pages restrictions and does not expose brokerage credentials,
 because this version has none. GitHub's free-plan usage and Pages availability
 are subject to GitHub's current terms.
+
+The full market scan downloads Yahoo Finance data in batches and can take much
+longer than the starter watchlist. Missing or throttled tickers are listed as
+skipped instead of stopping the entire report.
 
 ## Open a stock guide
 
@@ -44,6 +52,10 @@ the actual fill price and confirm live prices and order behavior with your broke
 Generated report timestamps use `America/New_York`, which automatically displays
 `EST` or `EDT` as daylight-saving rules require.
 
+The table displays 50 results per page. Search and signal filters work across the
+full result set. Results are ordered by signal consensus first, then score, Buy
+votes, average dollar volume, and ticker.
+
 ## Sources and methodology
 
 The rules are an original, transparent combination of established technical
@@ -58,14 +70,23 @@ interpretations used by the project:
 - [Volume, support, resistance, and technical-analysis overview — Fidelity](https://www.fidelity.com/learning-center/trading-investing/technical-analysis/what-is-technical-analysis)
 - [Profit/loss targets and exit strategies — Fidelity](https://www.fidelity.com/learning-center/trading-investing/trading/exit-strategies)
 - [Limit and stop order behavior — Investor.gov](https://www.investor.gov/introduction-investing/investing-basics/how-stock-markets-work/types-orders)
+- [US-listed symbol directory definitions — Nasdaq Trader](https://www.nasdaqtrader.com/trader.aspx?id=symboldirdefs)
 
 These references do not endorse this screener or its thresholds. The consensus
 labels and ATR-based price guide are project-specific research rules and have
 not been validated as profitable.
 
-## Change the stocks
+## Use a custom watchlist
 
-Edit `config/tickers.txt`. Use one Yahoo Finance ticker symbol per line.
+The default command scans all active US-listed stocks and ETFs. To use the
+smaller file-based watchlist instead:
+
+```powershell
+python src/screener.py --universe file
+```
+
+Edit `config/tickers.txt` to change that custom watchlist. Use one Yahoo Finance
+ticker symbol per line.
 
 ## Run locally
 
