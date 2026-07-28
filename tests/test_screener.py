@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 import tempfile
 import unittest
@@ -8,7 +9,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from screener import add_indicators, read_tickers, render_html, score_ticker
+from screener import (
+    add_indicators,
+    read_tickers,
+    render_html,
+    score_ticker,
+    write_json,
+)
 
 
 def sample_prices(rows: int = 280) -> pd.DataFrame:
@@ -61,6 +68,13 @@ class ScreenerTests(unittest.TestCase):
             result.signal,
             {"Strong Buy", "Buy", "Neutral", "Sell", "Strong Sell"},
         )
+        self.assertEqual(set(result.model_details), set(result.model_votes))
+        self.assertTrue(
+            all(
+                "Buy" in detail and "Sell" in detail
+                for detail in result.model_details.values()
+            )
+        )
         self.assertLessEqual(result.limit_entry, result.close)
         self.assertLess(result.stop_price, result.limit_entry)
         self.assertGreater(result.target_price, result.limit_entry)
@@ -80,6 +94,22 @@ class ScreenerTests(unittest.TestCase):
         self.assertIn('id="stock-dialog"', document)
         self.assertIn("Hypothetical order guide", document)
         self.assertIn('"model_votes"', document)
+        self.assertIn("Example take-profit sell limit (2R)", document)
+        self.assertIn("Exact rule and current values", document)
+        self.assertIn("take-profit sell limit is", document)
+        self.assertRegex(
+            document,
+            r"Generated \d{4}-\d{2}-\d{2} \d{2}:\d{2} E(?:S|D)T",
+        )
+
+    def test_json_timestamp_uses_eastern_time(self):
+        result = score_ticker("TEST", sample_prices())
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "results.json"
+            write_json([result], [], output)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(payload["generated_timezone"], "America/New_York")
+        self.assertRegex(payload["generated_at"], r"-0[45]:00$")
 
     def test_watchlist_ignores_comments_and_duplicates(self):
         with tempfile.TemporaryDirectory() as directory:
