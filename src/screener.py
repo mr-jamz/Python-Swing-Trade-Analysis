@@ -4,8 +4,9 @@ import argparse
 import html
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -15,6 +16,7 @@ DISCLAIMER = (
     "Research tool only—not financial advice or an instruction to trade. "
     "Scores describe rule matches, not expected returns. Verify all data before acting."
 )
+EASTERN_TIME = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -35,6 +37,7 @@ class Result:
     sell_votes: int
     neutral_votes: int
     model_votes: dict[str, str]
+    model_details: dict[str, str]
     limit_entry: float
     stop_price: float
     target_price: float
@@ -93,7 +96,9 @@ def add_indicators(frame: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
-def model_consensus(row: pd.Series) -> tuple[str, dict[str, str]]:
+def model_consensus(
+    row: pd.Series,
+) -> tuple[str, dict[str, str], dict[str, str]]:
     close = float(row["Close"])
     ema20 = float(row["EMA20"])
     ema50 = float(row["EMA50"])
@@ -130,6 +135,29 @@ def model_consensus(row: pd.Series) -> tuple[str, dict[str, str]]:
             )
         ),
     }
+    details = {
+        "EMA trend": (
+            f"Close ${close:.2f}; EMA20 ${ema20:.2f}; EMA50 ${ema50:.2f}. "
+            "Buy requires Close > EMA20 > EMA50. Sell requires "
+            "Close < EMA20 < EMA50. Otherwise Neutral."
+        ),
+        "MACD momentum": (
+            f"MACD {macd:.2f}; signal line {macd_signal:.2f}. "
+            "Buy requires MACD above both its signal line and zero. Sell requires "
+            "MACD below both its signal line and zero. Otherwise Neutral."
+        ),
+        "RSI momentum": (
+            f"RSI(14) {rsi:.1f}. Buy is 50–70. Sell is below 40 or above 75; "
+            "above 75 means extended, not a guaranteed reversal. Otherwise Neutral."
+        ),
+        "Breakout + volume": (
+            f"Close ${close:.2f}; prior 20-day high ${prior_high:.2f}; "
+            f"prior 20-day low ${prior_low:.2f}; relative volume "
+            f"{relative_volume:.2f}×. Buy requires a close above the prior high "
+            "with at least 1.20× volume. Sell requires a close below the prior low "
+            "with at least 1.20× volume. Otherwise Neutral."
+        ),
+    }
 
     buy_votes = sum(vote == "Buy" for vote in votes.values())
     sell_votes = sum(vote == "Sell" for vote in votes.values())
@@ -143,7 +171,7 @@ def model_consensus(row: pd.Series) -> tuple[str, dict[str, str]]:
         signal = "Sell"
     else:
         signal = "Neutral"
-    return signal, votes
+    return signal, votes, details
 
 
 def order_guide(row: pd.Series, signal: str) -> dict[str, float | str]:
@@ -190,7 +218,7 @@ def score_ticker(ticker: str, frame: pd.DataFrame) -> Result | None:
     average_dollar_volume = float(row["AVG_VOLUME20"] * close)
     day_change_pct = float((close / prior["Close"] - 1) * 100)
     high_252 = float(row["HIGH252"])
-    signal, model_votes = model_consensus(row)
+    signal, model_votes, model_details = model_consensus(row)
     guide = order_guide(row, signal)
 
     score = 0
@@ -271,6 +299,7 @@ def score_ticker(ticker: str, frame: pd.DataFrame) -> Result | None:
         sell_votes=sum(vote == "Sell" for vote in model_votes.values()),
         neutral_votes=sum(vote == "Neutral" for vote in model_votes.values()),
         model_votes=model_votes,
+        model_details=model_details,
         limit_entry=float(guide["limit_entry"]),
         stop_price=float(guide["stop_price"]),
         target_price=float(guide["target_price"]),
@@ -337,7 +366,7 @@ def money(value: float) -> str:
 
 
 def render_html(results: list[Result], skipped: list[str], output: Path) -> None:
-    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    generated = datetime.now(EASTERN_TIME).strftime("%Y-%m-%d %H:%M %Z")
     rows = []
     for index, item in enumerate(results):
         reason_text = "; ".join(item.reasons) or "No positive rules matched"
@@ -417,8 +446,13 @@ cursor:pointer; }} .price-grid {{ display:grid;
 grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; }}
 .card {{ padding:12px; border:1px solid var(--line); border-radius:10px;
 background:#11182a; }} .card b {{ display:block; font-size:18px; }}
+.definition {{ display:block; margin-top:7px; color:var(--muted); font-size:13px; }}
 .model-table {{ width:100%; white-space:normal; margin:14px 0; }}
-.model-table td {{ padding:9px 4px; }} .order-note {{ padding:12px;
+.model-table th {{ position:static; padding:9px 4px; background:transparent; }}
+.model-table td {{ padding:9px 4px; vertical-align:top; }}
+.model-rule {{ min-width:280px; color:var(--muted); font-size:13px; }}
+.rule-summary {{ padding:12px; border:1px solid var(--line); border-radius:10px; }}
+.order-note {{ padding:12px;
 border-left:4px solid #60a5fa; background:#15233b; }}
 </style>
 </head>
@@ -443,20 +477,38 @@ Prices may be delayed or incomplete.</p>
   </div>
   <div class="dialog-body">
     <p id="dialog-votes" class="muted"></p>
+    <p class="rule-summary"><strong>Consensus categories:</strong>
+    Strong Buy = at least 3 Buy votes and no Sell votes. Buy = at least 2 Buy
+    votes and more Buy than Sell votes. Neutral = neither side qualifies.
+    Sell mirrors Buy; Strong Sell mirrors Strong Buy. Sell signals are an
+    exit/review warning for long positions, not a short-sale instruction.</p>
     <h3>Model votes</h3>
-    <table class="model-table"><tbody id="model-votes"></tbody></table>
+    <table class="model-table">
+      <thead><tr><th>Indicator</th><th>Vote</th><th>Exact rule and current values</th></tr></thead>
+      <tbody id="model-votes"></tbody>
+    </table>
     <h3>Hypothetical order guide</h3>
     <p><strong id="order-action"></strong></p>
     <div class="price-grid">
-      <div class="card">Buy limit<b id="limit-entry"></b></div>
-      <div class="card">Protective stop guide<b id="stop-price"></b></div>
-      <div class="card">2R target guide<b id="target-price"></b></div>
-      <div class="card">Risk per share<b id="risk-share"></b></div>
+      <div class="card">Planned buy limit<b id="limit-entry"></b>
+        <span class="definition">Maximum planned entry price. A buy limit can
+        fill at this price or lower, or may not fill.</span></div>
+      <div class="card">Protective sell-stop guide<b id="stop-price"></b>
+        <span class="definition">Example loss-control trigger below entry.
+        A stop becomes a market order and its fill price can differ.</span></div>
+      <div class="card">Example take-profit sell limit (2R)<b id="target-price"></b>
+        <span class="definition">Entry + twice the planned risk per share.
+        A sell limit can fill at this price or higher, or may not fill.</span></div>
+      <div class="card">Planned risk per share (1R)<b id="risk-share"></b>
+        <span class="definition">Buy limit − protective stop. This is the
+        planned loss per share before slippage or fees.</span></div>
     </div>
+    <p class="rule-summary" id="take-profit-example"></p>
     <p class="order-note" id="order-note"></p>
     <p class="muted">Share-count formula: your chosen dollar risk ÷ risk per share.
-    A limit order may not execute. A stop order can execute away from its stop price.
-    Confirm prices and order behavior with your broker.</p>
+    Recalculate the target from the actual fill price. Limit orders may not execute;
+    stop orders can execute away from the stop price. Confirm supported order types,
+    time-in-force, live quotes, and buying power with your broker.</p>
     <h3>Why it ranked here</h3>
     <p id="dialog-reasons"></p>
     <p><strong>Warnings:</strong> <span id="dialog-warnings"></span></p>
@@ -483,10 +535,13 @@ function openStock(index) {{
       const row = document.createElement("tr");
       const name = document.createElement("td");
       const result = document.createElement("td");
+      const detail = document.createElement("td");
       name.textContent = model;
       result.textContent = vote;
       result.className = `signal ${{vote.toLowerCase()}}`;
-      row.append(name, result);
+      detail.textContent = item.model_details[model];
+      detail.className = "model-rule";
+      row.append(name, result, detail);
       return row;
     }})
   );
@@ -495,6 +550,14 @@ function openStock(index) {{
   document.getElementById("stop-price").textContent = dollars(item.stop_price);
   document.getElementById("target-price").textContent = dollars(item.target_price);
   document.getElementById("risk-share").textContent = dollars(item.risk_per_share);
+  document.getElementById("take-profit-example").textContent =
+    item.signal === "Buy" || item.signal === "Strong Buy"
+      ? `If shares fill at ${{dollars(item.limit_entry)}}, the illustrative ` +
+        `take-profit sell limit is ${{dollars(item.target_price)}}. ` +
+        `1R = ${{dollars(item.limit_entry)}} − ${{dollars(item.stop_price)}} = ` +
+        `${{dollars(item.risk_per_share)}}; 2R adds twice that risk to the entry.`
+      : "No new long entry is supported by the current consensus, so the displayed " +
+        "prices are a risk map—not a take-profit instruction.";
   document.getElementById("order-note").textContent = item.order_note;
   document.getElementById("dialog-reasons").textContent =
     item.reasons.join("; ") || "No positive rules matched";
@@ -519,7 +582,8 @@ dialog.addEventListener("click", event => {{
 def write_json(results: list[Result], skipped: list[str], output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(EASTERN_TIME).isoformat(),
+        "generated_timezone": "America/New_York",
         "disclaimer": DISCLAIMER,
         "results": [asdict(item) for item in results],
         "skipped": skipped,

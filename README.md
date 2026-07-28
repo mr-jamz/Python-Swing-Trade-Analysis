@@ -24,13 +24,25 @@ Click a ticker or **Open guide** in the report. The panel shows:
 
 - A consensus signal from EMA trend, MACD momentum, RSI momentum, and a
   volume-confirmed 20-day breakout model
-- Each model's individual Buy, Neutral, or Sell vote
+- Each model's individual Buy, Neutral, or Sell vote, its exact threshold, and
+  the stock's current indicator values
 - A hypothetical pullback buy-limit price, ATR-based protective stop guide,
-  2R target guide, and risk per share
+  example take-profit sell limit, and risk per share
+
+`1R` is the planned risk per share: buy limit minus protective stop. The example
+take-profit sell limit is a `2R` target:
+
+```text
+take-profit target = buy limit + 2 × (buy limit − protective stop)
+```
 
 The order guide is a price-and-risk calculator, not an order ticket. A buy limit
-can execute only at its limit price or lower and may never fill. Confirm live
-prices and order behavior with your broker.
+can execute only at its limit price or lower and may never fill. A sell limit can
+execute only at its limit price or higher and may never fill. Recalculate from
+the actual fill price and confirm live prices and order behavior with your broker.
+
+Generated report timestamps use `America/New_York`, which automatically displays
+`EST` or `EDT` as daylight-saving rules require.
 
 ## Sources and methodology
 
@@ -44,7 +56,8 @@ interpretations used by the project:
 - [Average True Range (ATR) — Fidelity](https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/atr)
 - [Bollinger Bands — Fidelity](https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/bollinger-bands)
 - [Volume, support, resistance, and technical-analysis overview — Fidelity](https://www.fidelity.com/learning-center/trading-investing/technical-analysis/what-is-technical-analysis)
-- [Limit and stop order behavior — Investor.gov](https://www.investor.gov/introduction-investing/general-resources/news-alerts/alerts-bulletins/investor-bulletins-14)
+- [Profit/loss targets and exit strategies — Fidelity](https://www.fidelity.com/learning-center/trading-investing/trading/exit-strategies)
+- [Limit and stop order behavior — Investor.gov](https://www.investor.gov/introduction-investing/investing-basics/how-stock-markets-work/types-orders)
 
 These references do not endorse this screener or its thresholds. The consensus
 labels and ATR-based price guide are project-specific research rules and have
