@@ -11,8 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from screener import (
     add_indicators,
+    parse_symbol_directory,
     read_tickers,
     render_html,
+    result_sort_key,
     score_ticker,
     write_json,
 )
@@ -97,10 +99,39 @@ class ScreenerTests(unittest.TestCase):
         self.assertIn("Example take-profit sell limit (2R)", document)
         self.assertIn("Exact rule and current values", document)
         self.assertIn("take-profit sell limit is", document)
+        self.assertIn('const pageSize = 50', document)
+        self.assertIn('id="ticker-search"', document)
+        self.assertIn('id="signal-filter"', document)
+        self.assertIn("stocks and ETFs", document)
         self.assertRegex(
             document,
             r"Generated \d{4}-\d{2}-\d{2} \d{2}:\d{2} E(?:S|D)T",
         )
+
+    def test_symbol_directory_includes_stocks_and_etfs(self):
+        directory = (
+            "Symbol|Security Name|Test Issue|ETF\n"
+            "AAPL|Apple Inc. - Common Stock|N|N\n"
+            "QQQ|Invesco QQQ Trust|N|Y\n"
+            "BRK.B|Berkshire Hathaway Class B|N|N\n"
+            "FAKE|Example Test Security|Y|N\n"
+            "XYZW|Example Warrant|N|N\n"
+            "File Creation Time: 0727202620:00||||\n"
+        )
+        self.assertEqual(
+            parse_symbol_directory(directory, "Symbol"),
+            ["AAPL", "QQQ", "BRK-B"],
+        )
+
+    def test_signal_priority_sorts_best_consensus_first(self):
+        buy = score_ticker("BUY", sample_prices())
+        neutral = score_ticker("NEUTRAL", sample_prices())
+        buy.signal = "Buy"
+        buy.score = 50
+        neutral.signal = "Neutral"
+        neutral.score = 100
+        ordered = sorted([neutral, buy], key=result_sort_key)
+        self.assertEqual([item.ticker for item in ordered], ["BUY", "NEUTRAL"])
 
     def test_json_timestamp_uses_eastern_time(self):
         result = score_ticker("TEST", sample_prices())

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import html
+import io
 import json
+import re
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -17,6 +22,28 @@ DISCLAIMER = (
     "Scores describe rule matches, not expected returns. Verify all data before acting."
 )
 EASTERN_TIME = ZoneInfo("America/New_York")
+NASDAQ_LISTED_URL = (
+    "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+)
+OTHER_LISTED_URL = (
+    "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+)
+SIGNAL_PRIORITY = {
+    "Strong Buy": 0,
+    "Buy": 1,
+    "Neutral": 2,
+    "Sell": 3,
+    "Strong Sell": 4,
+}
+EXCLUDED_SECURITY_WORDS = (
+    " warrant",
+    " right",
+    " unit",
+    " bond",
+    " debenture",
+    " note due",
+    " notes due",
+)
 
 
 @dataclass
@@ -55,6 +82,44 @@ def read_tickers(path: Path) -> list[str]:
         if value and not value.startswith("#"):
             tickers.append(value)
     return list(dict.fromkeys(tickers))
+
+
+def parse_symbol_directory(text: str, symbol_field: str) -> list[str]:
+    tickers: list[str] = []
+    reader = csv.DictReader(io.StringIO(text), delimiter="|")
+    for row in reader:
+        symbol = (row.get(symbol_field) or "").strip().upper()
+        name = (row.get("Security Name") or "").strip().lower()
+        if not symbol or (row.get("Test Issue") or "").strip().upper() == "Y":
+            continue
+        is_etf = (row.get("ETF") or "").strip().upper() == "Y"
+        if not is_etf and any(word in name for word in EXCLUDED_SECURITY_WORDS):
+            continue
+        symbol = symbol.replace(".", "-")
+        if re.fullmatch(r"[A-Z][A-Z0-9-]{0,13}", symbol):
+            tickers.append(symbol)
+    return list(dict.fromkeys(tickers))
+
+
+def download_directory(url: str) -> str:
+    request = Request(
+        url,
+        headers={"User-Agent": "US-Swing-Stock-Screener/1.0"},
+    )
+    with urlopen(request, timeout=30) as response:
+        return response.read().decode("utf-8")
+
+
+def fetch_us_tickers() -> list[str]:
+    nasdaq = parse_symbol_directory(
+        download_directory(NASDAQ_LISTED_URL),
+        "Symbol",
+    )
+    other_exchanges = parse_symbol_directory(
+        download_directory(OTHER_LISTED_URL),
+        "ACT Symbol",
+    )
+    return sorted(dict.fromkeys([*nasdaq, *other_exchanges]))
 
 
 def add_indicators(frame: pd.DataFrame) -> pd.DataFrame:
@@ -339,24 +404,76 @@ def download_prices(tickers: list[str], period: str = "18mo") -> pd.DataFrame:
     )
 
 
-def run_screen(tickers: list[str]) -> tuple[list[Result], list[str]]:
-    prices = download_prices(tickers)
+def result_sort_key(item: Result) -> tuple[int, int, int, float, str]:
+    return (
+        SIGNAL_PRIORITY.get(item.signal, 99),
+        -item.score,
+        -item.buy_votes,
+        -item.average_dollar_volume,
+        item.ticker,
+    )
+
+
+def run_screen(
+    tickers: list[str],
+    batch_size: int = 100,
+    batch_delay: float = 0.75,
+) -> tuple[list[Result], list[str]]:
+    if batch_size < 1:
+        raise ValueError("Batch size must be at least 1.")
+
     results: list[Result] = []
     skipped: list[str] = []
-    for ticker in tickers:
-        frame = extract_ticker_frame(prices, ticker)
-        if frame is None:
-            skipped.append(ticker)
-            continue
-        try:
-            result = score_ticker(ticker, frame)
-        except (KeyError, TypeError, ValueError, ZeroDivisionError):
-            result = None
-        if result is None:
-            skipped.append(ticker)
-        else:
-            results.append(result)
-    return sorted(results, key=lambda item: (-item.score, item.ticker)), skipped
+    total_batches = (len(tickers) + batch_size - 1) // batch_size
+
+    for batch_number, start in enumerate(range(0, len(tickers), batch_size), start=1):
+        pending = tickers[start : start + batch_size]
+        print(
+            f"Downloading batch {batch_number}/{total_batches} "
+            f"({len(pending)} tickers)...",
+            flush=True,
+        )
+
+        for attempt in range(2):
+            if not pending:
+                break
+            try:
+                prices = download_prices(pending)
+            except Exception as error:
+                print(
+                    f"Batch {batch_number} attempt {attempt + 1} failed: {error}",
+                    flush=True,
+                )
+                if attempt == 0:
+                    time.sleep(max(batch_delay, 3))
+                    continue
+                skipped.extend(pending)
+                pending = []
+                break
+
+            retry: list[str] = []
+            for ticker in pending:
+                frame = extract_ticker_frame(prices, ticker)
+                if frame is None:
+                    retry.append(ticker)
+                    continue
+                try:
+                    result = score_ticker(ticker, frame)
+                except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                    result = None
+                if result is None:
+                    retry.append(ticker)
+                else:
+                    results.append(result)
+            pending = retry
+            if pending and attempt == 0:
+                time.sleep(max(batch_delay, 3))
+
+        skipped.extend(pending)
+        if batch_number < total_batches and batch_delay:
+            time.sleep(batch_delay)
+
+    return sorted(results, key=result_sort_key), list(dict.fromkeys(skipped))
 
 
 def money(value: float) -> str:
@@ -373,7 +490,8 @@ def render_html(results: list[Result], skipped: list[str], output: Path) -> None
         warning_text = "; ".join(item.warnings) or "None"
         signal_class = item.signal.lower().replace(" ", "-")
         rows.append(
-            "<tr>"
+            f"<tr data-index='{index}' data-ticker='{html.escape(item.ticker)}' "
+            f"data-signal='{html.escape(item.signal)}'>"
             f"<td><button class='ticker stock-open' data-index='{index}'>"
             f"{html.escape(item.ticker)}</button></td>"
             f"<td><span class='score s{min(item.score // 20, 4)}'>{item.score}</span></td>"
@@ -418,6 +536,16 @@ h1 {{ margin:0 0 6px; font-size:clamp(25px,4vw,42px); }}
 background:#282317; padding:12px 15px; margin:20px 0; }}
 .table-wrap {{ overflow:auto; background:var(--panel); border:1px solid var(--line);
 border-radius:12px; }}
+.controls {{ display:flex; flex-wrap:wrap; align-items:end; gap:12px;
+margin:16px 0; }} .controls label {{ color:var(--muted); }}
+.controls input,.controls select {{ display:block; min-width:180px; margin-top:4px;
+padding:9px 10px; border:1px solid var(--line); border-radius:8px;
+background:var(--panel); color:var(--text); }}
+.result-count {{ margin-left:auto; color:var(--muted); }}
+.pager {{ display:flex; justify-content:center; align-items:center; gap:12px;
+margin:16px 0; }} .pager button {{ padding:8px 12px; border:1px solid #456086;
+border-radius:8px; background:#1c2a43; color:#bfdbfe; cursor:pointer; }}
+.pager button:disabled {{ opacity:.45; cursor:not-allowed; }}
 table {{ width:100%; border-collapse:collapse; white-space:nowrap; }}
 th,td {{ padding:12px; border-bottom:1px solid var(--line); text-align:left; }}
 th {{ position:sticky; top:0; background:#182137; color:#b9c4d8; }}
@@ -458,14 +586,33 @@ border-left:4px solid #60a5fa; background:#15233b; }}
 </head>
 <body><main>
 <h1>US Swing Stock Screener</h1>
-<p class="muted">Generated {generated} · Highest rule-match score first</p>
+<p class="muted">Generated {generated} · Strongest consensus, score, and liquidity first</p>
 <div class="notice"><strong>Important:</strong> {html.escape(DISCLAIMER)}</div>
+<div class="controls">
+  <label>Search ticker
+    <input id="ticker-search" type="search" placeholder="AAPL">
+  </label>
+  <label>Signal
+    <select id="signal-filter">
+      <option value="">All signals</option>
+      <option>Strong Buy</option><option>Buy</option><option>Neutral</option>
+      <option>Sell</option><option>Strong Sell</option>
+    </select>
+  </label>
+  <span class="result-count" id="result-count"></span>
+</div>
 <div class="table-wrap"><table>
 <thead><tr><th>Ticker</th><th>Score</th><th>Signal</th><th>Setup</th><th>Close</th>
 <th>Day</th><th>RSI</th><th>Rel. volume</th><th>ATR</th>
 <th>Avg $ volume</th><th>Details</th></tr></thead>
-<tbody>{table_rows}</tbody>
+<tbody id="results-body">{table_rows}</tbody>
 </table></div>
+<p id="no-matches" class="muted" hidden>No stocks match these filters.</p>
+<div class="pager">
+  <button id="previous-page" type="button">Previous</button>
+  <span id="page-info"></span>
+  <button id="next-page" type="button">Next</button>
+</div>
 {skipped_note}
 <p class="muted">A score is a transparent checklist total. It is not a prediction.
 Prices may be delayed or incomplete.</p>
@@ -519,6 +666,36 @@ Prices may be delayed or incomplete.</p>
 const results = JSON.parse(document.getElementById("results-data").textContent);
 const dialog = document.getElementById("stock-dialog");
 const dollars = value => `$${{Number(value).toFixed(2)}}`;
+const pageSize = 50;
+let currentPage = 1;
+const resultRows = Array.from(
+  document.querySelectorAll("#results-body tr[data-index]")
+);
+const tickerSearch = document.getElementById("ticker-search");
+const signalFilter = document.getElementById("signal-filter");
+const previousPage = document.getElementById("previous-page");
+const nextPage = document.getElementById("next-page");
+
+function updatePage() {{
+  const query = tickerSearch.value.trim().toUpperCase();
+  const selectedSignal = signalFilter.value;
+  const matches = resultRows.filter(row =>
+    row.dataset.ticker.includes(query) &&
+    (!selectedSignal || row.dataset.signal === selectedSignal)
+  );
+  const pageCount = Math.max(1, Math.ceil(matches.length / pageSize));
+  currentPage = Math.min(currentPage, pageCount);
+  resultRows.forEach(row => row.hidden = true);
+  const start = (currentPage - 1) * pageSize;
+  matches.slice(start, start + pageSize).forEach(row => row.hidden = false);
+  document.getElementById("result-count").textContent =
+    `${{matches.length.toLocaleString()}} stocks and ETFs`;
+  document.getElementById("page-info").textContent =
+    `Page ${{currentPage.toLocaleString()}} of ${{pageCount.toLocaleString()}}`;
+  document.getElementById("no-matches").hidden = matches.length !== 0;
+  previousPage.disabled = currentPage <= 1;
+  nextPage.disabled = currentPage >= pageCount;
+}}
 
 function openStock(index) {{
   const item = results[index];
@@ -569,10 +746,25 @@ function openStock(index) {{
 document.querySelectorAll(".stock-open").forEach(button =>
   button.addEventListener("click", () => openStock(Number(button.dataset.index)))
 );
+function resetAndUpdate() {{
+  currentPage = 1;
+  updatePage();
+}}
+tickerSearch.addEventListener("input", resetAndUpdate);
+signalFilter.addEventListener("change", resetAndUpdate);
+previousPage.addEventListener("click", () => {{
+  currentPage -= 1;
+  updatePage();
+}});
+nextPage.addEventListener("click", () => {{
+  currentPage += 1;
+  updatePage();
+}});
 document.getElementById("dialog-close").addEventListener("click", () => dialog.close());
 dialog.addEventListener("click", event => {{
   if (event.target === dialog) dialog.close();
 }});
+updatePage();
 </script>
 </body></html>"""
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -593,15 +785,32 @@ def write_json(results: list[Result], skipped: list[str], output: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Rank US swing-trade research candidates.")
+    parser.add_argument(
+        "--universe",
+        choices=("all-us", "file"),
+        default="all-us",
+        help="Use all active US-listed stocks and ETFs, or a local ticker file.",
+    )
     parser.add_argument("--tickers", type=Path, default=Path("config/tickers.txt"))
+    parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--batch-delay", type=float, default=0.75)
     parser.add_argument("--html", type=Path, default=Path("report/index.html"))
     parser.add_argument("--json", type=Path, default=Path("report/results.json"))
     args = parser.parse_args()
 
-    tickers = read_tickers(args.tickers)
+    tickers = (
+        fetch_us_tickers()
+        if args.universe == "all-us"
+        else read_tickers(args.tickers)
+    )
     if not tickers:
-        raise SystemExit("No tickers were found in the watchlist.")
-    results, skipped = run_screen(tickers)
+        raise SystemExit("No tickers were found for the selected universe.")
+    print(f"Universe: {len(tickers)} stocks and ETFs.", flush=True)
+    results, skipped = run_screen(
+        tickers,
+        batch_size=args.batch_size,
+        batch_delay=args.batch_delay,
+    )
     render_html(results, skipped, args.html)
     write_json(results, skipped, args.json)
     print(f"Screened {len(results)} tickers; skipped {len(skipped)}.")
