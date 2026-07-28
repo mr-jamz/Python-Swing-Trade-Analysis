@@ -1,4 +1,4 @@
-# US Swing Stock Screener
+# US Swing-Trade Stock Screener
 
 A free, manual-run research screener for US-listed stocks and ETFs. It downloads daily
 market data, applies transparent technical rules, ranks the watchlist, and
