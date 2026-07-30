@@ -279,10 +279,32 @@ def score_ticker(ticker: str, frame: pd.DataFrame) -> Result | None:
     ema50 = float(row["EMA50"])
     rsi = float(row["RSI14"])
     atr_pct = float(row["ATR14"] / close * 100)
-    relative_volume = float(row["Volume"] / row["AVG_VOLUME20"])
-    average_dollar_volume = float(row["AVG_VOLUME20"] * close)
+    average_volume = float(row["AVG_VOLUME20"])
+    if not np.isfinite(average_volume) or average_volume <= 0:
+        return None
+    relative_volume = float(row["Volume"] / average_volume)
+    average_dollar_volume = float(average_volume * close)
     day_change_pct = float((close / prior["Close"] - 1) * 100)
     high_252 = float(row["HIGH252"])
+    required_values = (
+        close,
+        ema20,
+        ema50,
+        rsi,
+        float(row["ATR14"]),
+        atr_pct,
+        average_volume,
+        relative_volume,
+        average_dollar_volume,
+        day_change_pct,
+        high_252,
+        float(row["PRIOR_HIGH20"]),
+        float(row["PRIOR_LOW20"]),
+        float(row["MACD"]),
+        float(row["MACD_SIGNAL"]),
+    )
+    if not all(np.isfinite(value) for value in required_values):
+        return None
     signal, model_votes, model_details = model_consensus(row)
     guide = order_guide(row, signal)
 
@@ -517,7 +539,10 @@ def render_html(results: list[Result], skipped: list[str], output: Path) -> None
     skipped_note = (
         f"<p class='muted'>Skipped: {html.escape(', '.join(skipped))}</p>" if skipped else ""
     )
-    results_json = json.dumps([asdict(item) for item in results]).replace("</", "<\\/")
+    results_json = json.dumps(
+        [asdict(item) for item in results],
+        allow_nan=False,
+    ).replace("</", "<\\/")
     document = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -780,7 +805,10 @@ def write_json(results: list[Result], skipped: list[str], output: Path) -> None:
         "results": [asdict(item) for item in results],
         "skipped": skipped,
     }
-    output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    output.write_text(
+        json.dumps(payload, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
 
 
 def main() -> int:

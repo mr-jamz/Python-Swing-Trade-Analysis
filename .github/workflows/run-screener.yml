@@ -2,6 +2,9 @@ name: Run swing stock screener
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+      timezone: "America/New_York"
 
 permissions:
   contents: read

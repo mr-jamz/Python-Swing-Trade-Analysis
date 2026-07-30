@@ -103,10 +103,16 @@ class ScreenerTests(unittest.TestCase):
         self.assertIn('id="ticker-search"', document)
         self.assertIn('id="signal-filter"', document)
         self.assertIn("stocks and ETFs", document)
+        self.assertNotIn(": NaN", document)
         self.assertRegex(
             document,
             r"Generated \d{4}-\d{2}-\d{2} \d{2}:\d{2} E(?:S|D)T",
         )
+
+    def test_non_finite_market_data_is_skipped(self):
+        prices = sample_prices()
+        prices.loc[prices.index[-20:], "Volume"] = 0
+        self.assertIsNone(score_ticker("BAD", prices))
 
     def test_symbol_directory_includes_stocks_and_etfs(self):
         directory = (
