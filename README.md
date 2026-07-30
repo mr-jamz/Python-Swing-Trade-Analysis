@@ -22,9 +22,26 @@ private-repository Pages restrictions and does not expose brokerage credentials,
 because this version has none. GitHub's free-plan usage and Pages availability
 are subject to GitHub's current terms.
 
+The workflow runs automatically every day at **12:00 AM America/New_York** and
+can still be started manually. GitHub may delay scheduled jobs during periods of
+high Actions load. GitHub also disables scheduled workflows in public
+repositories after 60 days without repository activity; editing the schedule
+reactivates it.
+
 The full market scan downloads Yahoo Finance data in batches and can take much
 longer than the starter watchlist. Missing or throttled tickers are listed as
 skipped instead of stopping the entire report.
+
+## Do we need n8n?
+
+Not for the daily scan. GitHub Actions already provides the timer, compute,
+testing, and Pages deployment in one place.
+
+n8n becomes useful if the project later needs multi-service orchestration—for
+example, sending custom alerts, recording candidates in another database, or
+starting a separately approved paper-trading workflow. n8n Community Edition is
+free when self-hosted, but it requires an always-on host, maintenance, and a
+GitHub credential. That adds complexity without improving this single daily job.
 
 ## Open a stock guide
 
@@ -71,6 +88,8 @@ interpretations used by the project:
 - [Profit/loss targets and exit strategies — Fidelity](https://www.fidelity.com/learning-center/trading-investing/trading/exit-strategies)
 - [Limit and stop order behavior — Investor.gov](https://www.investor.gov/introduction-investing/investing-basics/how-stock-markets-work/types-orders)
 - [US-listed symbol directory definitions — Nasdaq Trader](https://www.nasdaqtrader.com/trader.aspx?id=symboldirdefs)
+- [Scheduled workflows and timezone behavior — GitHub Docs](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+- [Free self-hosted n8n Community Edition — n8n](https://support.n8n.io/article/can-i-get-n-8-n-for-free)
 
 These references do not endorse this screener or its thresholds. The consensus
 labels and ATR-based price guide are project-specific research rules and have
