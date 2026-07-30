@@ -436,6 +436,14 @@ def result_sort_key(item: Result) -> tuple[int, int, int, float, str]:
     )
 
 
+def select_report_results(results: list[Result], limit: int = 500) -> list[Result]:
+    """Return the strongest Buy signals for the published report."""
+    return sorted(
+        (item for item in results if item.signal == "Buy"),
+        key=result_sort_key,
+    )[:limit]
+
+
 def run_screen(
     tickers: list[str],
     batch_size: int = 100,
@@ -839,9 +847,13 @@ def main() -> int:
         batch_size=args.batch_size,
         batch_delay=args.batch_delay,
     )
-    render_html(results, skipped, args.html)
-    write_json(results, skipped, args.json)
-    print(f"Screened {len(results)} tickers; skipped {len(skipped)}.")
+    report_results = select_report_results(results)
+    render_html(report_results, skipped, args.html)
+    write_json(report_results, skipped, args.json)
+    print(
+        f"Screened {len(results)} tickers; published "
+        f"{len(report_results)} Buy signals; skipped {len(skipped)}."
+    )
     print(f"Report: {args.html.resolve()}")
     return 0
 

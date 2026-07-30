@@ -69,8 +69,8 @@ the actual fill price and confirm live prices and order behavior with your broke
 Generated report timestamps use `America/New_York`, which automatically displays
 `EST` or `EDT` as daylight-saving rules require.
 
-The table displays 50 results per page. Search and signal filters work across the
-full result set. Results are ordered by signal consensus first, then score, Buy
+The report publishes only the 500 highest-ranked `Buy` signals and displays 50
+results per page. Results are ordered by signal consensus first, then score, Buy
 votes, average dollar volume, and ticker.
 
 ## Sources and methodology

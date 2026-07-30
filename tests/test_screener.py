@@ -16,6 +16,7 @@ from screener import (
     render_html,
     result_sort_key,
     score_ticker,
+    select_report_results,
     write_json,
 )
 
@@ -138,6 +139,25 @@ class ScreenerTests(unittest.TestCase):
         neutral.score = 100
         ordered = sorted([neutral, buy], key=result_sort_key)
         self.assertEqual([item.ticker for item in ordered], ["BUY", "NEUTRAL"])
+
+    def test_report_selection_keeps_only_top_500_buy_signals(self):
+        results = []
+        for index in range(505):
+            result = score_ticker(f"BUY{index:03}", sample_prices())
+            result.signal = "Buy"
+            result.score = index
+            results.append(result)
+        neutral = score_ticker("NEUTRAL", sample_prices())
+        neutral.signal = "Neutral"
+        neutral.score = 999
+        results.append(neutral)
+
+        selected = select_report_results(results)
+
+        self.assertEqual(len(selected), 500)
+        self.assertTrue(all(item.signal == "Buy" for item in selected))
+        self.assertEqual(selected[0].ticker, "BUY504")
+        self.assertNotIn("NEUTRAL", [item.ticker for item in selected])
 
     def test_json_timestamp_uses_eastern_time(self):
         result = score_ticker("TEST", sample_prices())
