@@ -22,8 +22,10 @@ private-repository Pages restrictions and does not expose brokerage credentials,
 because this version has none. GitHub's free-plan usage and Pages availability
 are subject to GitHub's current terms.
 
-The workflow runs automatically every day at **12:00 AM America/New_York** and
-can still be started manually. GitHub may delay scheduled jobs during periods of
+The workflow starts at **12:00 AM America/New_York** on weekdays, then checks
+the NYSE calendar. Weekend and exchange-holiday runs stop before the market
+scan, while early-close sessions still run. Manual runs bypass this gate.
+GitHub may delay scheduled jobs during periods of
 high Actions load. GitHub also disables scheduled workflows in public
 repositories after 60 days without repository activity; editing the schedule
 reactivates it.
@@ -89,6 +91,8 @@ interpretations used by the project:
 - [Limit and stop order behavior — Investor.gov](https://www.investor.gov/introduction-investing/investing-basics/how-stock-markets-work/types-orders)
 - [US-listed symbol directory definitions — Nasdaq Trader](https://www.nasdaqtrader.com/trader.aspx?id=symboldirdefs)
 - [Scheduled workflows and timezone behavior — GitHub Docs](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+- [NYSE holidays and trading hours — NYSE](https://www.nyse.com/trade/hours-calendars)
+- [NYSE calendar and `valid_days` — pandas-market-calendars](https://pandas-market-calendars.readthedocs.io/en/stable/pandas_market_calendars.html)
 - [Free self-hosted n8n Community Edition — n8n](https://support.n8n.io/article/can-i-get-n-8-n-for-free)
 
 These references do not endorse this screener or its thresholds. The consensus

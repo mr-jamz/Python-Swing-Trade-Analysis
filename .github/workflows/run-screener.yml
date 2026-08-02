@@ -3,7 +3,7 @@ name: Run swing stock screener
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 0 * * 1-5"
       timezone: "America/New_York"
 
 permissions:
@@ -35,21 +35,30 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Check NYSE trading calendar
+        id: market_day
+        run: python src/market_day.py
+
       - name: Run tests
+        if: github.event_name == 'workflow_dispatch' || steps.market_day.outputs.market_open == 'true'
         run: python -m unittest discover -s tests
 
       - name: Build report
+        if: github.event_name == 'workflow_dispatch' || steps.market_day.outputs.market_open == 'true'
         run: python src/screener.py
 
       - name: Configure GitHub Pages
+        if: github.event_name == 'workflow_dispatch' || steps.market_day.outputs.market_open == 'true'
         uses: actions/configure-pages@v5
 
       - name: Upload report
+        if: github.event_name == 'workflow_dispatch' || steps.market_day.outputs.market_open == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: report
 
       - name: Publish report
+        if: github.event_name == 'workflow_dispatch' || steps.market_day.outputs.market_open == 'true'
         id: deployment
         uses: actions/deploy-pages@v4
 
